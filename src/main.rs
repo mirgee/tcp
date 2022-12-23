@@ -1,7 +1,18 @@
-use std::io::{self, Read};
+mod tcp;
+
+use std::{io::{self, Read}, net::Ipv4Addr, collections::HashMap};
+use tcp::State as TcpState;
+
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
+struct Quad {
+    src: (Ipv4Addr, u16),
+    dst: (Ipv4Addr, u16),
+}
 
 fn main() -> io::Result<()> {
     let mut config = tun::Configuration::default();
+    let mut conns: HashMap<Quad, TcpState> = HashMap::new();
 
     config
         .address((10, 0, 0, 1))
@@ -13,15 +24,26 @@ fn main() -> io::Result<()> {
     let mut dev = tun::create(&config).unwrap();
 
     loop {
-        dev.read(&mut buf).unwrap();
-        match etherparse::Ipv4HeaderSlice::from_slice(&buf[4..]) {
-            Ok(ip) => {
-                let src = ip.source_addr();
-                let dst = ip.destination_addr();
-                let proto = ip.protocol();
-                let id = ip.identification();
-                let len = ip.payload_len();
-                println!("{} -> {} {}b proto: {} id: {}", src, dst, len, proto, id);
+        let nbytes = dev.read(&mut buf).unwrap();
+        match etherparse::Ipv4HeaderSlice::from_slice(&buf[4..nbytes]) {
+            Ok(iph) => {
+                let proto = iph.protocol();
+                if proto != 0x06 {
+                    continue;
+                }
+                match etherparse::TcpHeaderSlice::from_slice(&buf[4 + iph.slice().len()..nbytes]) {
+                    Ok(tcph) => {
+                        let datastart = 4 + iph.slice().len() + tcph.slice().len();
+                        conns.entry(Quad {
+                            src: (iph.source_addr(), tcph.source_port()),
+                            dst: (iph.destination_addr(), tcph.destination_port()),
+                        }).or_insert(TcpState::new()).on_packet(iph, tcph, &buf[datastart..nbytes]);
+                    }
+                    Err(e) => {
+                        println!("Received weird packet: {:?}", e);
+
+                    }
+                }
             }
             Err(e) => {
                 println!("Received non-IP packet: {:?}", e);

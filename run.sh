@@ -7,6 +7,6 @@ fi
 sudo ./target/debug/my-rtcp &
 pid=$!
 sleep 1
-sudo route add -host 10.0.0.1 -interface utun4
+sudo route add -host 10.0.0.2 -interface utun4
 trap "sudo kill $pid" INT TERM
 wait $pid
