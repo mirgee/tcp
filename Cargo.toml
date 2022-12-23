@@ -1,0 +1,7 @@
+[package]
+name = "my-rtcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tun = { version = "0.5.4", features = ["async"] }
