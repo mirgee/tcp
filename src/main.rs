@@ -1,7 +1,7 @@
 mod tcp;
 
 use std::{io::{self, Read}, net::Ipv4Addr, collections::HashMap};
-use tcp::State as TcpState;
+use tcp::Connection;
 
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
@@ -12,7 +12,7 @@ struct Quad {
 
 fn main() -> io::Result<()> {
     let mut config = tun::Configuration::default();
-    let mut conns: HashMap<Quad, TcpState> = HashMap::new();
+    let mut conns: HashMap<Quad, Connection> = HashMap::new();
 
     config
         .address((10, 0, 0, 1))
@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
                         conns.entry(Quad {
                             src: (iph.source_addr(), tcph.source_port()),
                             dst: (iph.destination_addr(), tcph.destination_port()),
-                        }).or_insert(TcpState::new()).on_packet(iph, tcph, &buf[datastart..nbytes]);
+                        }).or_insert(Connection::new()).on_packet(&mut dev, iph, tcph, &buf[datastart..nbytes])?;
                     }
                     Err(e) => {
                         println!("Received weird packet: {:?}", e);
