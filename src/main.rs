@@ -34,10 +34,18 @@ fn main() -> io::Result<()> {
                 match etherparse::TcpHeaderSlice::from_slice(&buf[4 + iph.slice().len()..nbytes]) {
                     Ok(tcph) => {
                         let datastart = 4 + iph.slice().len() + tcph.slice().len();
-                        conns.entry(Quad {
+                        match conns.entry(Quad {
                             src: (iph.source_addr(), tcph.source_port()),
                             dst: (iph.destination_addr(), tcph.destination_port()),
-                        }).or_insert(Connection::new()).on_packet(&mut dev, iph, tcph, &buf[datastart..nbytes])?;
+                        }) {
+                            std::collections::hash_map::Entry::Occupied(mut conn) => {
+                                conn.get_mut().on_packet(iph, tcph, &buf[datastart..nbytes])?;
+                            },
+                            std::collections::hash_map::Entry::Vacant(conn) => {
+                                conn.insert(Connection::accept(&mut dev, iph, tcph)?);
+                            }
+
+                        };
                     }
                     Err(e) => {
                         println!("Received weird packet: {:?}", e);
