@@ -42,7 +42,7 @@ fn main() -> io::Result<()> {
                                 conn.get_mut().on_packet(iph, tcph, &buf[datastart..nbytes])?;
                             },
                             std::collections::hash_map::Entry::Vacant(conn) => {
-                                conn.insert(Connection::accept(&mut dev, iph, tcph)?);
+                                conn.insert(Connection::create(&mut dev, iph.to_header(), tcph.to_header())?);
                             }
 
                         };
