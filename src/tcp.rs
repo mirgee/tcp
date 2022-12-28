@@ -3,7 +3,10 @@ use std::io::Write;
 use etherparse::{ip_number::TCP, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
 use tun::platform::macos::Device;
 
-use crate::{validation::is_packet_valid, sequence::{SendSequence, ReceiveSequence}};
+use crate::{
+    sequence::{ReceiveSequence, SendSequence},
+    validation::{acceptable_ack, is_packet_valid},
+};
 
 pub enum State {
     SynRcvd,
@@ -68,7 +71,8 @@ impl Connection {
         rsp_tcph.acknowledgment_number = rcv_seq.nxt;
         rsp_tcph.syn = true;
         rsp_tcph.ack = true;
-        rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(&rcv_iph, &[]).unwrap();
+        rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(&rcv_iph, &[]).unwrap(); // TODO: Is this
+                                                                                 // necessary?
 
         // Construct IP header
         let rsp_iph = Ipv4Header::new(
@@ -90,8 +94,17 @@ impl Connection {
         })
     }
 
-    fn send(dev: &mut Device, tcph: TcpHeader, iph: Ipv4Header, data: &[u8]) -> std::io::Result<()> {
+    fn send(
+        dev: &mut Device,
+        tcph: TcpHeader,
+        iph: Ipv4Header,
+        data: &[u8],
+    ) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
+        // TODO: TCP sequence numbers must be set before sending, should be done at the point of
+        // tcph creation
+        // tcph.sequence_number = self.snd_seq.nxt;
+        // tcph.acknowledgment_number = self.rcv_seq.nxt;
         let unwritten = {
             let mut bufs = &mut buf[..];
             bufs.write(&[0, 0, 0, 2])?;
@@ -104,13 +117,33 @@ impl Connection {
         Ok(())
     }
 
+    fn send_rst(&mut self, dev: &mut Device) -> std::io::Result<()> {
+        self.tcph.rst = true;
+        self.tcph.sequence_number = 0;
+        self.tcph.acknowledgment_number = 0;
+        self.iph
+            .set_payload_len(self.tcph.header_len().into())
+            .unwrap();
+        Self::send(dev, self.tcph.clone(), self.iph.clone(), &[])
+    }
+
     /// RFC 793, p. 23
     pub fn on_packet(
         &mut self,
+        dev: &mut Device,
         iph: Ipv4HeaderSlice,
         tcph: TcpHeaderSlice,
         packet: &[u8],
     ) -> std::io::Result<()> {
+        if !self.state.is_synchronized()
+            && !acceptable_ack(
+                self.snd_seq.una,
+                tcph.acknowledgment_number(),
+                self.snd_seq.nxt,
+            )
+        {
+            self.send_rst(dev)?;
+        }
         if !is_packet_valid(packet, &self.snd_seq, &self.rcv_seq, &tcph) {
             println!("Invalid packet");
             return Ok(());
@@ -123,7 +156,10 @@ impl Connection {
                         "Received non-ACK packet in syn-rcvd state",
                     ));
                 }
-                self.state = State::Established;
+                self.state = {
+                    println!("Connection established");
+                    State::Established
+                }
             }
             _ => {}
         };
