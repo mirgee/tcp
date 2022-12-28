@@ -2,7 +2,15 @@ use etherparse::TcpHeaderSlice;
 
 use crate::sequence::{SendSequence, ReceiveSequence};
 
-pub fn is_included_in_wrapped_boundary(start: u32, x: u32, end: u32) -> bool {
+pub fn is_included_in_wrapped_boundary_end_incl(start: u32, x: u32, end: u32) -> bool {
+    if start < end {
+        start < x && x <= end
+    } else {
+        start < x || x <= end
+    }
+}
+
+pub fn is_included_in_wrapped_boundary_start_incl(start: u32, x: u32, end: u32) -> bool {
     if start < end {
         start <= x && x < end
     } else {
@@ -17,23 +25,24 @@ pub fn check_zero_len_packet_zero_wnd(seg_seq: u32, rcv_nxt: u32) -> bool {
 
 // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
 pub fn check_zero_len_packet_nonzero_wnd(seg_seq: u32, rcv_nxt: u32, rcv_wnd: u32) -> bool {
-    is_included_in_wrapped_boundary(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd)
+    is_included_in_wrapped_boundary_start_incl(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd)
 }
 
 // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
 // or
 // RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
 pub fn check_both_ends_inside_window(seg_seq: u32, seg_len: u32, rcv_nxt: u32, rcv_wnd: u32) -> bool {
-    is_included_in_wrapped_boundary(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd)
-        || is_included_in_wrapped_boundary(
+    is_included_in_wrapped_boundary_start_incl(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd)
+        || is_included_in_wrapped_boundary_start_incl(
             rcv_nxt,
             seg_seq + seg_len - 1,
             rcv_nxt + rcv_wnd,
         )
 }
 
+// SND.UNA < SEG.ACK =< SND.NXT
 pub fn acceptable_ack(snd_una: u32, seg_ackn: u32, snd_nxt: u32) -> bool {
-    is_included_in_wrapped_boundary(snd_una, seg_ackn, snd_nxt)
+    is_included_in_wrapped_boundary_end_incl(snd_una, seg_ackn, snd_nxt)
 }
 
 pub fn is_packet_valid(packet: &[u8], snd_seq: &SendSequence, rcv_seq: &ReceiveSequence, tcph: &TcpHeaderSlice) -> bool {

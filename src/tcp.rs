@@ -74,7 +74,7 @@ impl Connection {
         let rsp_iph = iph_builder.build(rsp_tcph.header_len());
 
         // Send packet
-        Self::send(dev, rsp_tcph, rsp_iph, &[])?;
+        Self::send(dev, rsp_tcph, rsp_iph)?;
         Ok(Self {
             state: State::SynRcvd,
             snd_seq,
@@ -84,13 +84,10 @@ impl Connection {
         })
     }
 
-    #[allow(unused_variables)]
-    #[allow(unused_assignments)]
     fn send(
         dev: &mut Device,
         tcph: TcpHeader,
         iph: Ipv4Header,
-        data: &[u8],
     ) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
         let unwritten = {
@@ -104,17 +101,17 @@ impl Connection {
         Ok(())
     }
 
-    fn send_rst(&mut self, dev: &mut Device) -> std::io::Result<()> {
+    fn send_rst(&self, dev: &mut Device) -> std::io::Result<()> {
+        // TODO: Reset sequence numbers
         let tcph = self.tcph_builder.create_rst();
         let iph = self.iph_builder.build(tcph.header_len());
-        Self::send(dev, tcph, iph, &[])
+        Self::send(dev, tcph, iph)
     }
 
     /// RFC 793, p. 23
     pub fn on_packet(
         &mut self,
         dev: &mut Device,
-        iph: Ipv4HeaderSlice,
         tcph: TcpHeaderSlice,
         packet: &[u8],
     ) -> std::io::Result<()> {
@@ -126,6 +123,7 @@ impl Connection {
             )
         {
             self.send_rst(dev)?;
+            return Ok(());
         }
         if !is_packet_valid(packet, &self.snd_seq, &self.rcv_seq, &tcph) {
             println!("Invalid packet");
@@ -139,10 +137,8 @@ impl Connection {
                         "Received non-ACK packet in syn-rcvd state",
                     ));
                 }
-                self.state = {
-                    println!("Connection established");
-                    State::Established
-                }
+                println!("Connection established");
+                self.state = State::Established;
             }
             _ => {}
         };
