@@ -5,7 +5,7 @@ use tun::platform::macos::Device;
 
 use crate::{
     sequence::{ReceiveSequence, SendSequence},
-    validation::{acceptable_ack, is_packet_valid},
+    validation::{acceptable_ack, is_packet_valid}, header::{TcpHeaderBuilder, Ipv4HeaderBuilder},
 };
 
 pub enum State {
@@ -26,8 +26,8 @@ pub struct Connection {
     state: State,
     snd_seq: SendSequence,
     rcv_seq: ReceiveSequence,
-    iph: Ipv4Header, // Not great, we have to change the payload len every time
-    tcph: TcpHeader,
+    tcph_builder: TcpHeaderBuilder,
+    iph_builder: Ipv4HeaderBuilder,
 }
 
 impl Connection {
@@ -66,34 +66,26 @@ impl Connection {
         };
 
         // Construct TCP header
-        let mut rsp_tcph =
-            etherparse::TcpHeader::new(rcv_tcph.destination_port, rcv_tcph.source_port, 0, wnd);
-        rsp_tcph.acknowledgment_number = rcv_seq.nxt;
-        rsp_tcph.syn = true;
-        rsp_tcph.ack = true;
-        rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(&rcv_iph, &[]).unwrap(); // TODO: Is this
-                                                                                 // necessary?
+        let tcph_builder = TcpHeaderBuilder::new(rcv_tcph.destination_port, rcv_tcph.source_port, wnd);
+        let rsp_tcph = tcph_builder.create_syn_ack(iss, rcv_seq.nxt, &rcv_iph);
 
         // Construct IP header
-        let rsp_iph = Ipv4Header::new(
-            rsp_tcph.header_len(),
-            64,
-            TCP,
-            rcv_iph.destination,
-            rcv_iph.source,
-        );
+        let iph_builder = Ipv4HeaderBuilder::new(rcv_iph.destination, rcv_iph.source, TCP, 64);
+        let rsp_iph = iph_builder.build(rsp_tcph.header_len());
 
         // Send packet
-        Self::send(dev, rsp_tcph.clone(), rsp_iph.clone(), &[])?;
+        Self::send(dev, rsp_tcph, rsp_iph, &[])?;
         Ok(Self {
             state: State::SynRcvd,
             snd_seq,
             rcv_seq,
-            iph: rsp_iph,
-            tcph: rsp_tcph,
+            iph_builder,
+            tcph_builder,
         })
     }
 
+    #[allow(unused_variables)]
+    #[allow(unused_assignments)]
     fn send(
         dev: &mut Device,
         tcph: TcpHeader,
@@ -101,16 +93,11 @@ impl Connection {
         data: &[u8],
     ) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
-        // TODO: TCP sequence numbers must be set before sending, should be done at the point of
-        // tcph creation
-        // tcph.sequence_number = self.snd_seq.nxt;
-        // tcph.acknowledgment_number = self.rcv_seq.nxt;
         let unwritten = {
             let mut bufs = &mut buf[..];
             bufs.write(&[0, 0, 0, 2])?;
             iph.write(&mut bufs).unwrap();
             tcph.write(&mut bufs).unwrap();
-            bufs.write(data).unwrap();
             bufs.len()
         };
         dev.write(&buf[..buf.len() - unwritten]).unwrap();
@@ -118,13 +105,9 @@ impl Connection {
     }
 
     fn send_rst(&mut self, dev: &mut Device) -> std::io::Result<()> {
-        self.tcph.rst = true;
-        self.tcph.sequence_number = 0;
-        self.tcph.acknowledgment_number = 0;
-        self.iph
-            .set_payload_len(self.tcph.header_len().into())
-            .unwrap();
-        Self::send(dev, self.tcph.clone(), self.iph.clone(), &[])
+        let tcph = self.tcph_builder.create_rst();
+        let iph = self.iph_builder.build(tcph.header_len());
+        Self::send(dev, tcph, iph, &[])
     }
 
     /// RFC 793, p. 23
