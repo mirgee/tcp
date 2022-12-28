@@ -3,59 +3,20 @@ use std::io::Write;
 use etherparse::{ip_number::TCP, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
 use tun::platform::macos::Device;
 
+use crate::{validation::is_packet_valid, sequence::{SendSequence, ReceiveSequence}};
+
 pub enum State {
     SynRcvd,
     Established,
 }
 
-/// Send Sequence Space (RFC 793, p. 20)
-///
-/// ```
-///            1         2          3          4
-///       ----------|----------|----------|----------
-///              SND.UNA    SND.NXT    SND.UNA
-///                                   +SND.WND
-///
-/// 1 - old sequence numbers which have been acknowledged
-/// 2 - sequence numbers of unacknowledged data
-/// 3 - sequence numbers allowed for new data transmission
-/// 4 - future sequence numbers which are not yet allowed
-/// ```
-struct SendSequence {
-    /// oldest unacknowledged sequence number
-    una: u32,
-    /// next sequence number to be sent
-    nxt: u32,
-    /// send window
-    wnd: u16,
-    /// send urgent pointer
-    up: u32,
-    /// segment sequence number used for last window update
-    wl1: u32,
-    /// segment acknowledgment number used for last window update
-    wl2: u32,
-    /// initial send sequence number
-    iss: u32,
-}
-
-/// Receive Sequence Space (RFC 793, p. 20)
-///
-/// ```
-///     1          2          3
-/// ----------|----------|----------
-///        RCV.NXT    RCV.NXT
-///                  +RCV.WND
-/// ```
-struct ReceiveSequence {
-    /// next sequence number expected on an incoming segments, and
-    /// is the left or lower edge of the receive window
-    nxt: u32,
-    /// receive window
-    wnd: u16,
-    /// receive urgent pointer
-    up: u16,
-    /// initial receive sequence number
-    irs: u32,
+impl State {
+    pub fn is_synchronized(&self) -> bool {
+        match self {
+            State::SynRcvd => false,
+            State::Established => true,
+        }
+    }
 }
 
 pub struct Connection {
@@ -118,16 +79,8 @@ impl Connection {
             rcv_iph.source,
         );
 
-        // Construct pattern and send
-        let mut buf = [0u8; 1500];
-        let unwritten = {
-            let mut bufs = &mut buf[..];
-            bufs.write(&[0, 0, 0, 2])?;
-            rsp_iph.write(&mut bufs).unwrap();
-            rsp_tcph.write(&mut bufs).unwrap();
-            bufs.len()
-        };
-        dev.write(&buf[..buf.len() - unwritten]).unwrap();
+        // Send packet
+        Self::send(dev, rsp_tcph.clone(), rsp_iph.clone(), &[])?;
         Ok(Self {
             state: State::SynRcvd,
             snd_seq,
@@ -137,64 +90,18 @@ impl Connection {
         })
     }
 
-    pub fn is_packet_valid(&self, packet: &[u8], tcph: &TcpHeaderSlice) -> bool {
-        let snd_una = self.snd_seq.una;
-        let snd_nxt = self.snd_seq.nxt;
-
-        let rcv_nxt = self.rcv_seq.nxt;
-        let rcv_wnd = self.rcv_seq.wnd as u32;
-
-        let seg_ackn = tcph.acknowledgment_number();
-        let seg_seq = tcph.sequence_number();
-        let seg_len = {
-            let mut plen = packet.len() as u32;
-            if tcph.syn() {
-                plen += 1;
-            }
-            if tcph.fin() {
-                plen += 1;
-            }
-            plen
+    fn send(dev: &mut Device, tcph: TcpHeader, iph: Ipv4Header, data: &[u8]) -> std::io::Result<()> {
+        let mut buf = [0u8; 1500];
+        let unwritten = {
+            let mut bufs = &mut buf[..];
+            bufs.write(&[0, 0, 0, 2])?;
+            iph.write(&mut bufs).unwrap();
+            tcph.write(&mut bufs).unwrap();
+            bufs.write(data).unwrap();
+            bufs.len()
         };
-
-        let is_included_in_wrapped_boundary = |start: u32, x: u32, end: u32| -> bool {
-            if start < end {
-                start <= x && x < end
-            } else {
-                start <= x || x < end
-            }
-        };
-
-        // SEG.SEQ = RCV.NXT
-        let check_zero_len_packet_zero_wnd = || -> bool { seg_seq == rcv_nxt };
-
-        // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-        let check_zero_len_packet_nonzero_wnd =
-            || -> bool { is_included_in_wrapped_boundary(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd) };
-
-        // SND.UNA < SEG.ACK =< SND.NXT
-        let acceptable_ack =
-            || -> bool { is_included_in_wrapped_boundary(snd_una, seg_ackn, snd_nxt) };
-
-        // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-        // or
-        // RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-        let check_both_ends_inside_window = || -> bool {
-            is_included_in_wrapped_boundary(rcv_nxt, seg_seq, rcv_nxt + rcv_wnd)
-                || is_included_in_wrapped_boundary(
-                    rcv_nxt,
-                    seg_seq + seg_len - 1,
-                    rcv_nxt + rcv_wnd,
-                )
-        };
-
-        match (seg_len, rcv_wnd) {
-            (0, 0) => check_zero_len_packet_zero_wnd(),
-            (0, y) if y > 0 => check_zero_len_packet_nonzero_wnd(),
-            (x, 0) if x > 0 => false,
-            (x, y) if x > 0 && y > 0 => acceptable_ack() && check_both_ends_inside_window(),
-            _ => unreachable!(),
-        }
+        dev.write(&buf[..buf.len() - unwritten]).unwrap();
+        Ok(())
     }
 
     /// RFC 793, p. 23
@@ -204,7 +111,7 @@ impl Connection {
         tcph: TcpHeaderSlice,
         packet: &[u8],
     ) -> std::io::Result<()> {
-        if !self.is_packet_valid(packet, &tcph) {
+        if !is_packet_valid(packet, &self.snd_seq, &self.rcv_seq, &tcph) {
             println!("Invalid packet");
             return Ok(());
         };

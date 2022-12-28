@@ -1,4 +1,6 @@
 mod tcp;
+mod validation;
+mod sequence;
 
 use std::{io::{self, Read}, net::Ipv4Addr, collections::HashMap};
 use tcp::Connection;
