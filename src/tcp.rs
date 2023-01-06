@@ -4,20 +4,28 @@ use etherparse::{ip_number::TCP, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHead
 use tun::platform::macos::Device;
 
 use crate::{
+    header::{Ipv4HeaderBuilder, TcpHeaderBuilder},
     sequence::{ReceiveSequence, SendSequence},
-    validation::{acceptable_ack, is_packet_valid}, header::{TcpHeaderBuilder, Ipv4HeaderBuilder},
+    validation::{acceptable_ack, is_packet_valid},
 };
 
+#[derive(Debug)]
 pub enum State {
     SynRcvd,
     Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    LastAck,
+    Closing,
+    Closed,
 }
 
 impl State {
     pub fn is_synchronized(&self) -> bool {
         match self {
             State::SynRcvd => false,
-            State::Established => true,
+            _ => true,
         }
     }
 }
@@ -66,7 +74,8 @@ impl Connection {
         };
 
         // Construct TCP header
-        let tcph_builder = TcpHeaderBuilder::new(rcv_tcph.destination_port, rcv_tcph.source_port, wnd);
+        let tcph_builder =
+            TcpHeaderBuilder::new(rcv_tcph.destination_port, rcv_tcph.source_port, wnd);
         let rsp_tcph = tcph_builder.create_syn_ack(iss, rcv_seq.nxt, &rcv_iph);
 
         // Construct IP header
@@ -84,11 +93,7 @@ impl Connection {
         })
     }
 
-    fn send(
-        dev: &mut Device,
-        tcph: TcpHeader,
-        iph: Ipv4Header,
-    ) -> std::io::Result<()> {
+    fn send(dev: &mut Device, tcph: TcpHeader, iph: Ipv4Header) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
         let unwritten = {
             let mut bufs = &mut buf[..];
@@ -97,6 +102,19 @@ impl Connection {
             tcph.write(&mut bufs).unwrap();
             bufs.len()
         };
+        // TODO: TCP sequence numbers must be set before sending, should be done at the point of
+        // tcph creation
+        // tcph.sequence_number = self.snd_seq.nxt;
+        // tcph.acknowledgment_number = self.rcv_seq.nxt;
+        // snd_nxt += payload_len;
+        // if tcph.syn {
+        //     payload_len += 1;
+        // }
+        // if tcph.fin {
+        //     payload_len += 1;
+        // }
+        // payload_len += data.len();
+        // iph.set_payload_len(payload_len).unwrap();
         dev.write(&buf[..buf.len() - unwritten]).unwrap();
         Ok(())
     }
@@ -106,6 +124,27 @@ impl Connection {
         let tcph = self.tcph_builder.create_rst();
         let iph = self.iph_builder.build(tcph.header_len());
         Self::send(dev, tcph, iph)
+    }
+
+    fn send_ack(&self, dev: &mut Device) -> std::io::Result<()> {
+        let tcph = self
+            .tcph_builder
+            .create_ack(self.snd_seq.nxt, self.rcv_seq.nxt);
+        let iph = self.iph_builder.build(tcph.header_len());
+        Self::send(dev, tcph, iph)
+    }
+
+    fn send_fin(&self, dev: &mut Device) -> std::io::Result<()> {
+        let tcph = self
+            .tcph_builder
+            .create_fin(self.snd_seq.nxt, self.rcv_seq.nxt);
+        let iph = self.iph_builder.build(tcph.header_len());
+        Self::send(dev, tcph, iph)
+    }
+
+    fn close_connection(&self, dev: &mut Device) -> std::io::Result<()> {
+        // TODO: Send FIN, move to FIN_WAIT_1
+        todo!()
     }
 
     /// RFC 793, p. 23
@@ -140,7 +179,51 @@ impl Connection {
                 println!("Connection established");
                 self.state = State::Established;
             }
-            _ => {}
+            State::Established => {
+                if tcph.fin() {
+                    println!("Received FIN");
+                    self.send_ack(dev)?;
+                    // TODO: Before sending FIN, should move to CloseWait and wait for
+                    // user to close
+                    self.send_fin(dev)?;
+                    self.state = State::LastAck;
+                    return Ok(());
+                }
+            }
+            State::FinWait1 => {
+                if !tcph.fin() || !packet.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Received non-FIN packet in fin-wait-1 state",
+                    ));
+                }
+                // TODO: If received FIN, send ACK and move to CLOSING
+                // TODO: If received ACK of our fin, move to FinWait2
+            }
+            State::FinWait2 => {
+                // TODO: Wait for Fin, send ACK, move to TimeWait and eventually Closed
+            }
+            State::LastAck => {
+                if !tcph.ack() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Received non-ACK packet in last-ack state",
+                    ));
+                }
+                println!("Connection closed");
+                self.state = State::Closed;
+            }
+            State::Closing => {
+                if !tcph.ack() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Received non-ACK packet in closing state",
+                    ));
+                }
+                println!("Connection closed");
+                self.state = State::Closed;
+            }
+            _ => unimplemented!(),
         };
         Ok(())
     }
