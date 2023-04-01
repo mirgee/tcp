@@ -2,6 +2,7 @@ use etherparse::Ipv4Header;
 
 type Ipv4Address = [u8; 4];
 
+#[derive(Debug)]
 pub struct Ipv4HeaderBuilder {
     ttl: u8,
     protocol: u8,
@@ -20,6 +21,12 @@ impl Ipv4HeaderBuilder {
     }
 
     pub fn build(&self, payload_len: u16) -> Ipv4Header {
-        Ipv4Header::new(payload_len, self.ttl, self.protocol, self.source, self.destination)
+        Ipv4Header::new(
+            payload_len,
+            self.ttl,
+            self.protocol,
+            self.source,
+            self.destination,
+        )
     }
 }

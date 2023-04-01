@@ -1,11 +1,14 @@
+mod header;
+mod sequence;
 mod tcp;
 mod validation;
-mod sequence;
-mod header;
 
-use std::{io::{self, Read}, net::Ipv4Addr, collections::HashMap};
+use std::{
+    collections::HashMap,
+    io::{self, Read},
+    net::Ipv4Addr,
+};
 use tcp::Connection;
-
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
 struct Quad {
@@ -42,17 +45,24 @@ fn main() -> io::Result<()> {
                             dst: (iph.destination_addr(), tcph.destination_port()),
                         }) {
                             std::collections::hash_map::Entry::Occupied(mut conn) => {
-                                conn.get_mut().on_packet(&mut dev, tcph, &buf[datastart..nbytes])?;
-                            },
-                            std::collections::hash_map::Entry::Vacant(conn) => {
-                                conn.insert(Connection::create(&mut dev, iph.to_header(), tcph.to_header())?);
+                                conn.get_mut().on_packet(
+                                    &mut dev,
+                                    iph.to_header(),
+                                    tcph,
+                                    &buf[datastart..nbytes],
+                                )?;
                             }
-
+                            std::collections::hash_map::Entry::Vacant(conn) => {
+                                conn.insert(Connection::create(
+                                    &mut dev,
+                                    iph.to_header(),
+                                    tcph.to_header(),
+                                )?);
+                            }
                         };
                     }
                     Err(e) => {
                         println!("Received weird packet: {:?}", e);
-
                     }
                 }
             }

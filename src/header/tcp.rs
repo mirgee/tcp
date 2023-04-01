@@ -1,5 +1,6 @@
 use etherparse::{Ipv4Header, TcpHeader};
 
+#[derive(Debug)]
 pub struct TcpHeaderBuilder {
     source_port: u16,
     destination_port: u16,
@@ -42,7 +43,12 @@ impl TcpHeaderBuilder {
         rsp_tcph
     }
 
-    pub fn create_ack(&self, sequence_number: u32, acknowledgment_number: u32) -> TcpHeader {
+    pub fn create_ack(
+        &self,
+        sequence_number: u32,
+        acknowledgment_number: u32,
+        iph: &Ipv4Header,
+    ) -> TcpHeader {
         let mut rsp_tcph = TcpHeader::new(
             self.destination_port,
             self.source_port,
@@ -51,7 +57,8 @@ impl TcpHeaderBuilder {
         );
         rsp_tcph.acknowledgment_number = acknowledgment_number;
         rsp_tcph.ack = true;
-        // rsp_tcph.checksum = rsp_tcph.calc_checksum(..);
+        rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(iph, &[]).unwrap();
+        println!("Created ack wih acknum {}", rsp_tcph.acknowledgment_number);
         rsp_tcph
     }
 
@@ -64,7 +71,7 @@ impl TcpHeaderBuilder {
         );
         rsp_tcph.acknowledgment_number = acknowledgment_number;
         rsp_tcph.fin = true;
-        // rsp_tcph.checksum = rsp_tcph.calc_checksum(..);
+        // rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(iph, &[]).unwrap();
         rsp_tcph
     }
 }

@@ -11,6 +11,7 @@
 /// 3 - sequence numbers allowed for new data transmission
 /// 4 - future sequence numbers which are not yet allowed
 /// ```
+#[derive(Debug)]
 pub struct SendSequence {
     /// oldest unacknowledged sequence number
     pub una: u32,

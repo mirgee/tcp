@@ -6,6 +6,7 @@
 ///        RCV.NXT    RCV.NXT
 ///                  +RCV.WND
 /// ```
+#[derive(Debug)]
 pub struct ReceiveSequence {
     /// next sequence number expected on an incoming segments, and
     /// is the left or lower edge of the receive window

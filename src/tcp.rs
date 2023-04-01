@@ -30,6 +30,7 @@ impl State {
     }
 }
 
+#[derive(Debug)]
 pub struct Connection {
     state: State,
     snd_seq: SendSequence,
@@ -57,7 +58,7 @@ impl Connection {
         // Keep track of what we're sending
         let snd_seq = SendSequence {
             una: iss,
-            nxt: iss + 1,
+            nxt: iss,
             wnd,
             up: 0,
             wl1: 0,
@@ -83,17 +84,18 @@ impl Connection {
         let rsp_iph = iph_builder.build(rsp_tcph.header_len());
 
         // Send packet
-        Self::send(dev, rsp_tcph, rsp_iph)?;
-        Ok(Self {
+        let mut conn = Self {
             state: State::SynRcvd,
             snd_seq,
             rcv_seq,
             iph_builder,
             tcph_builder,
-        })
+        };
+        conn.send(dev, rsp_tcph, rsp_iph)?;
+        Ok(conn)
     }
 
-    fn send(dev: &mut Device, tcph: TcpHeader, iph: Ipv4Header) -> std::io::Result<()> {
+    fn send(&mut self, dev: &mut Device, tcph: TcpHeader, iph: Ipv4Header) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
         let unwritten = {
             let mut bufs = &mut buf[..];
@@ -104,42 +106,41 @@ impl Connection {
         };
         // TODO: TCP sequence numbers must be set before sending, should be done at the point of
         // tcph creation
-        // tcph.sequence_number = self.snd_seq.nxt;
-        // tcph.acknowledgment_number = self.rcv_seq.nxt;
-        // snd_nxt += payload_len;
-        // if tcph.syn {
-        //     payload_len += 1;
-        // }
-        // if tcph.fin {
-        //     payload_len += 1;
-        // }
+        // self.snd_seq.nxt += payload_len;
+        if tcph.syn {
+            self.snd_seq.nxt = self.snd_seq.nxt.wrapping_add(1);
+        }
+        if tcph.fin {
+            self.snd_seq.nxt = self.snd_seq.nxt.wrapping_add(1);
+        }
         // payload_len += data.len();
         // iph.set_payload_len(payload_len).unwrap();
         dev.write(&buf[..buf.len() - unwritten]).unwrap();
         Ok(())
     }
 
-    fn send_rst(&self, dev: &mut Device) -> std::io::Result<()> {
+    fn send_rst(&mut self, dev: &mut Device) -> std::io::Result<()> {
         // TODO: Reset sequence numbers
         let tcph = self.tcph_builder.create_rst();
         let iph = self.iph_builder.build(tcph.header_len());
-        Self::send(dev, tcph, iph)
+        self.send(dev, tcph, iph)
     }
 
-    fn send_ack(&self, dev: &mut Device) -> std::io::Result<()> {
+    fn send_ack(&mut self, dev: &mut Device, iph: &Ipv4Header) -> std::io::Result<()> {
         let tcph = self
             .tcph_builder
-            .create_ack(self.snd_seq.nxt, self.rcv_seq.nxt);
+            .create_ack(self.snd_seq.nxt, self.rcv_seq.nxt, iph);
         let iph = self.iph_builder.build(tcph.header_len());
-        Self::send(dev, tcph, iph)
+        println!("Sending ACK: {:?}", tcph);
+        self.send(dev, tcph, iph)
     }
 
-    fn send_fin(&self, dev: &mut Device) -> std::io::Result<()> {
+    fn send_fin(&mut self, dev: &mut Device) -> std::io::Result<()> {
         let tcph = self
             .tcph_builder
             .create_fin(self.snd_seq.nxt, self.rcv_seq.nxt);
         let iph = self.iph_builder.build(tcph.header_len());
-        Self::send(dev, tcph, iph)
+        self.send(dev, tcph, iph)
     }
 
     fn close_connection(&self, dev: &mut Device) -> std::io::Result<()> {
@@ -151,6 +152,7 @@ impl Connection {
     pub fn on_packet(
         &mut self,
         dev: &mut Device,
+        iph: Ipv4Header,
         tcph: TcpHeaderSlice,
         packet: &[u8],
     ) -> std::io::Result<()> {
@@ -166,6 +168,8 @@ impl Connection {
         }
         if !is_packet_valid(packet, &self.snd_seq, &self.rcv_seq, &tcph) {
             println!("Invalid packet");
+            // TODO: Should send an empty acknowledgment segment containing the current send-sequence number
+            // and an acknowledgment indicating the next sequence number expected to be received
             return Ok(());
         };
         match self.state {
@@ -182,10 +186,10 @@ impl Connection {
             State::Established => {
                 if tcph.fin() {
                     println!("Received FIN");
-                    self.send_ack(dev)?;
+                    self.send_ack(dev, &iph)?;
                     // TODO: Before sending FIN, should move to CloseWait and wait for
                     // user to close
-                    self.send_fin(dev)?;
+                    // self.send_fin(dev)?;
                     self.state = State::LastAck;
                     return Ok(());
                 }
@@ -214,6 +218,7 @@ impl Connection {
                 self.state = State::Closed;
             }
             State::Closing => {
+                // TODO: Verify it's our FIN what's being acked
                 if !tcph.ack() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
