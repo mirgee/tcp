@@ -46,17 +46,17 @@ pub fn check_both_ends_inside_window(
                 seg_seq.wrapping_add(seg_len).wrapping_sub(1),
                 rcv_nxt + rcv_wnd,
             );
-    println!("check_both_ends_inside_window: {}", res);
+    // println!("check_both_ends_inside_window: {}", res);
     res
 }
 
 // SND.UNA < SEG.ACK =< SND.NXT
 pub fn acceptable_ack(snd_una: u32, seg_ackn: u32, snd_nxt: u32) -> bool {
     let res = is_included_in_wrapped_boundary_end_incl(snd_una, seg_ackn, snd_nxt);
-    println!(
-        "acceptable_ack: {} < {} =< {} = {}",
-        snd_una, seg_ackn, snd_nxt, res
-    );
+    //     println!(
+    //         "acceptable_ack: {} < {} =< {} = {}",
+    //         snd_una, seg_ackn, snd_nxt, res
+    //     );
     res
 }
 

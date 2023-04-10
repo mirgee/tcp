@@ -58,7 +58,6 @@ impl TcpHeaderBuilder {
         rsp_tcph.acknowledgment_number = acknowledgment_number;
         rsp_tcph.ack = true;
         rsp_tcph.checksum = rsp_tcph.calc_checksum_ipv4(iph, &[]).unwrap();
-        println!("Created ack wih acknum {}", rsp_tcph.acknowledgment_number);
         rsp_tcph
     }
 

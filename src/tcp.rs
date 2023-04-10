@@ -126,10 +126,15 @@ impl Connection {
         self.send(dev, tcph, iph)
     }
 
-    fn send_ack(&mut self, dev: &mut Device, iph: &Ipv4Header) -> std::io::Result<()> {
+    fn send_ack(
+        &mut self,
+        dev: &mut Device,
+        iph: &Ipv4Header,
+        tcph: &TcpHeader,
+    ) -> std::io::Result<()> {
         let tcph = self
             .tcph_builder
-            .create_ack(self.snd_seq.nxt, self.rcv_seq.nxt, iph);
+            .create_ack(self.snd_seq.nxt, tcph.sequence_number, iph);
         let iph = self.iph_builder.build(tcph.header_len());
         println!("Sending ACK: {:?}", tcph);
         self.send(dev, tcph, iph)
@@ -163,6 +168,7 @@ impl Connection {
                 self.snd_seq.nxt,
             )
         {
+            println!("Sending RST");
             self.send_rst(dev)?;
             return Ok(());
         }
@@ -186,11 +192,11 @@ impl Connection {
             State::Established => {
                 if tcph.fin() {
                     println!("Received FIN");
-                    self.send_ack(dev, &iph)?;
+                    self.send_ack(dev, &iph, &tcph.to_header())?;
                     // TODO: Before sending FIN, should move to CloseWait and wait for
                     // user to close
                     // self.send_fin(dev)?;
-                    self.state = State::LastAck;
+                    self.state = State::CloseWait;
                     return Ok(());
                 }
             }
